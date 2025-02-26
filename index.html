@@ -38,6 +38,7 @@
             border-radius: 10px;
             max-width: 80%;
             box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            position: relative;
         }
         .user-message {
             background-color: #e1f5fe;
@@ -58,6 +59,9 @@
         .message-sender {
             font-weight: bold;
             margin-bottom: 5px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         .message-content {
             line-height: 1.4;
@@ -105,10 +109,39 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+        .speech-button {
+            background-color: transparent;
+            border: none;
+            cursor: pointer;
+            margin-left: 10px;
+            color: #2196F3;
+            display: flex;
+            align-items: center;
+        }
+        .speech-icon {
+            width: 18px;
+            height: 18px;
+        }
+        #stopSpeechButton {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: #f44336;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            font-size: 24px;
+            display: none;
+            cursor: pointer;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            z-index: 1000;
+        }
     </style>
 </head>
 <body>
-    <h1>Trợ lý Bảo Tâm</h1>
+    <h1>Trợ lý FMC</h1>
     
     <div id="chatbox">
         <div id="messages"></div>
@@ -118,9 +151,16 @@
         </div>
     </div>
     
+    <button id="stopSpeechButton" title="Dừng đọc">⏹️</button>
+    
     <script>
         let apiKey = '';
         let systemPrompt = '';
+        let isSpeaking = false;
+        let speechQueue = [];
+        let currentUtterance = null;
+        let isPaused = false;
+        let speechSynthesis = window.speechSynthesis;
         
         // Khởi tạo marked.js
         marked.setOptions({
@@ -135,6 +175,10 @@
         const messagesDiv = document.getElementById('messages');
         const userInput = document.getElementById('userInput');
         const sendButton = document.getElementById('sendButton');
+        const stopSpeechButton = document.getElementById('stopSpeechButton');
+        
+        // Kiểm tra hỗ trợ Speech Synthesis
+        const isSpeechSupported = 'speechSynthesis' in window;
         
         // Tải API key và System Prompt từ file
         async function loadConfigurations() {
@@ -154,12 +198,17 @@
                 }
                 systemPrompt = await systemPromptResponse.text();
                 
-                // Thông báo đã tải thành công
-                appendMessage('System', 'Trợ lý của Bảo Tâm xinh đẹp đã đến rồi nè!');
-                appendMessage('System', 'Chào mừng bạn đến với Trợ lý của Bảo Tâm! Hãy gửi tin nhắn để bắt đầu cuộc trò chuyện.');
+                // Không hiển thị thông báo đã tải cấu hình thành công
+                
+                if (!isSpeechSupported) {
+                    appendMessage('Chatbot FMC', 'Trình duyệt của bạn không hỗ trợ chức năng đọc văn bản.', true);
+                }
+                
+                // Hiển thị thông báo chào mừng với tên "Chatbot FMC"
+                appendMessage('Chatbot FMC', 'Chào mừng bạn đến với Trợ lý FMC! Hãy gửi tin nhắn để bắt đầu cuộc trò chuyện.', true);
             } catch (error) {
                 console.error('Lỗi khi tải cấu hình:', error);
-                appendMessage('System', 'Lỗi khi tải cấu hình: ' + error.message);
+                appendMessage('Chatbot FMC', 'Lỗi khi tải cấu hình: ' + error.message, true);
             }
         }
         
@@ -173,18 +222,24 @@
             }
         });
         
+        // Dừng đọc
+        stopSpeechButton.addEventListener('click', stopSpeech);
+        
         // Hàm gửi tin nhắn
         function sendMessage() {
             const message = userInput.value.trim();
             if (message) {
                 // Kiểm tra đã tải API key và System Prompt chưa
                 if (!apiKey || !systemPrompt) {
-                    appendMessage('System', 'Đang tải cấu hình, vui lòng đợi...');
+                    appendMessage('Chatbot FMC', 'Đang tải cấu hình, vui lòng đợi...', true);
                     return;
                 }
                 
+                // Dừng đọc nếu đang đọc
+                stopSpeech();
+                
                 // Thêm tin nhắn của người dùng vào giao diện
-                appendMessage('Kitty', message);
+                appendMessage('Khách hàng', message);
                 
                 // Thêm tin nhắn vào lịch sử cuộc trò chuyện
                 conversationHistory.push({
@@ -205,9 +260,9 @@
             let messageClass = '';
             
             // Xác định loại tin nhắn dựa trên người gửi
-            if (sender === 'Kitty') {
+            if (sender === 'Khách hàng') {
                 messageClass = 'user-message';
-            } else if (sender === 'Trợ lý Bảo Tâm') {
+            } else if (sender === 'Trợ lý FMC' || sender === 'Chatbot FMC') {
                 messageClass = 'bot-message';
             } else {
                 messageClass = 'system-message';
@@ -218,7 +273,27 @@
             // Tạo phần hiển thị người gửi
             const senderElement = document.createElement('div');
             senderElement.className = 'message-sender';
-            senderElement.textContent = sender + ':';
+            
+            // Tạo label người gửi
+            const senderLabel = document.createElement('span');
+            senderLabel.textContent = sender + ':';
+            senderElement.appendChild(senderLabel);
+            
+            // Thêm nút đọc nếu là tin nhắn từ bot và trình duyệt hỗ trợ
+            if ((sender === 'Trợ lý FMC' || sender === 'Chatbot FMC') && isSpeechSupported) {
+                const speechButton = document.createElement('button');
+                speechButton.className = 'speech-button';
+                speechButton.title = 'Đọc tin nhắn';
+                speechButton.innerHTML = '<svg class="speech-icon" viewBox="0 0 24 24"><path fill="currentColor" d="M14,3.23V5.29C16.89,6.15 19,8.83 19,12C19,15.17 16.89,17.84 14,18.7V20.77C18,19.86 21,16.28 21,12C21,7.72 18,4.14 14,3.23M16.5,12C16.5,10.23 15.5,8.71 14,7.97V16C15.5,15.29 16.5,13.76 16.5,12M3,9V15H7L12,20V4L7,9H3Z"/></svg>';
+                
+                speechButton.addEventListener('click', function() {
+                    const plainText = getPlainText(message);
+                    speakText(plainText);
+                });
+                
+                senderElement.appendChild(speechButton);
+            }
+            
             messageElement.appendChild(senderElement);
             
             // Tạo phần hiển thị nội dung
@@ -226,7 +301,7 @@
             contentElement.className = 'message-content';
             
             // Xử lý Markdown nếu cần
-            if (isMarkdown && sender === 'Trợ lý Bảo Tâm') {
+            if (isMarkdown && (sender === 'Trợ lý FMC' || sender === 'Chatbot FMC')) {
                 contentElement.innerHTML = marked.parse(message);
             } else {
                 contentElement.textContent = message;
@@ -235,6 +310,173 @@
             messageElement.appendChild(contentElement);
             messagesDiv.appendChild(messageElement);
             messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        // Lấy văn bản thuần túy từ HTML/Markdown
+        function getPlainText(text) {
+            // Tạo một phần tử tạm thời để chuyển đổi HTML sang plain text
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = marked.parse(text);
+            return tempDiv.textContent || tempDiv.innerText || '';
+        }
+        
+        // Hàm phát âm văn bản
+        function speakText(text) {
+            // Dừng đọc trước đó nếu có
+            stopSpeech();
+            
+            // Chia văn bản thành các đoạn để tránh bị ngắt
+            const sentences = splitTextIntoSentences(text);
+            speechQueue = sentences;
+            
+            // Bắt đầu đọc
+            isSpeaking = true;
+            isPaused = false;
+            stopSpeechButton.style.display = 'block';
+            
+            // Bắt đầu đọc từ đoạn đầu tiên
+            speakNextSentence();
+        }
+        
+        // Hàm chia văn bản thành các câu
+        function splitTextIntoSentences(text) {
+            // Loại bỏ các ký tự không cần thiết
+            text = text.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+            
+            // Chia văn bản thành các câu dựa trên dấu câu
+            const sentenceRegex = /[^.!?;\n]+[.!?;]?/g;
+            const sentences = text.match(sentenceRegex) || [];
+            
+            // Đảm bảo các câu không quá dài (tối đa 100 ký tự)
+            const result = [];
+            for (const sentence of sentences) {
+                if (sentence.length <= 100) {
+                    result.push(sentence);
+                } else {
+                    // Chia câu dài thành nhiều phần nhỏ hơn
+                    let remainingText = sentence;
+                    while (remainingText.length > 0) {
+                        // Tìm vị trí cắt phù hợp (dấu phẩy, khoảng trắng)
+                        let cutIndex = 100;
+                        if (remainingText.length > cutIndex) {
+                            const commaIndex = remainingText.lastIndexOf(',', cutIndex);
+                            const spaceIndex = remainingText.lastIndexOf(' ', cutIndex);
+                            cutIndex = (commaIndex > 0) ? commaIndex + 1 : 
+                                      (spaceIndex > 0) ? spaceIndex + 1 : cutIndex;
+                        } else {
+                            cutIndex = remainingText.length;
+                        }
+                        
+                        result.push(remainingText.substring(0, cutIndex));
+                        remainingText = remainingText.substring(cutIndex).trim();
+                    }
+                }
+            }
+            
+            return result;
+        }
+        
+        // Hàm đọc câu tiếp theo trong hàng đợi
+        function speakNextSentence() {
+            if (speechQueue.length === 0 || isPaused) {
+                // Đã đọc hết hoặc bị tạm dừng
+                if (speechQueue.length === 0) {
+                    isSpeaking = false;
+                    stopSpeechButton.style.display = 'none';
+                }
+                return;
+            }
+            
+            // Lấy câu tiếp theo
+            const nextSentence = speechQueue.shift();
+            
+            // Tạo utterance mới
+            const utterance = new SpeechSynthesisUtterance(nextSentence);
+            
+            // Phát hiện ngôn ngữ
+            const isVietnamese = /[àáạảãâầấậẩẫăằắặẳẵèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹđ]/i.test(nextSentence);
+            
+            // Tìm giọng đọc phù hợp
+            const voices = speechSynthesis.getVoices();
+            
+            if (isVietnamese) {
+                // Tìm giọng tiếng Việt
+                const vietnameseVoice = voices.find(voice => 
+                    voice.lang.includes('vi') || 
+                    voice.name.includes('Vietnam')
+                );
+                if (vietnameseVoice) utterance.voice = vietnameseVoice;
+                utterance.lang = 'vi-VN';
+            } else {
+                // Tìm giọng tiếng Anh
+                const englishVoice = voices.find(voice => 
+                    voice.lang.includes('en') && 
+                    (voice.name.includes('Female') || voice.name.includes('Google'))
+                );
+                if (englishVoice) utterance.voice = englishVoice;
+                utterance.lang = 'en-US';
+            }
+            
+            // Cài đặt tốc độ và âm lượng
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+            
+            // Xử lý sự kiện khi đọc xong
+            utterance.onend = function() {
+                // Đọc câu tiếp theo
+                speakNextSentence();
+            };
+            
+            // Xử lý sự kiện khi có lỗi
+            utterance.onerror = function(event) {
+                console.error('Lỗi khi đọc:', event);
+                // Thử đọc câu tiếp theo
+                speakNextSentence();
+            };
+            
+            // Bắt đầu đọc
+            currentUtterance = utterance;
+            speechSynthesis.speak(utterance);
+            
+            // Hack để ngăn việc dừng đọc giữa chừng trên Chrome
+            if (navigator.userAgent.includes('Chrome')) {
+                const intervalId = setInterval(() => {
+                    if (!isSpeaking) {
+                        clearInterval(intervalId);
+                    } else if (speechSynthesis.paused) {
+                        speechSynthesis.resume();
+                    }
+                }, 1000);
+            }
+        }
+        
+        // Hàm dừng đọc
+        function stopSpeech() {
+            if (isSpeaking) {
+                isPaused = true;
+                speechSynthesis.cancel();
+                speechQueue = [];
+                isSpeaking = false;
+                stopSpeechButton.style.display = 'none';
+            }
+        }
+        
+        // Hàm tạm dừng đọc
+        function pauseSpeech() {
+            if (isSpeaking && !isPaused) {
+                isPaused = true;
+                speechSynthesis.pause();
+            }
+        }
+        
+        // Hàm tiếp tục đọc
+        function resumeSpeech() {
+            if (isSpeaking && isPaused) {
+                isPaused = false;
+                speechSynthesis.resume();
+                speakNextSentence();
+            }
         }
         
         // Hàm gửi yêu cầu đến Gemini API và nhận phản hồi
@@ -287,7 +529,7 @@
                 }
                 
                 // Thêm phản hồi vào giao diện với xử lý Markdown
-                appendMessage('Trợ lý Bảo Tâm', geminiResponse, true);
+                appendMessage('Trợ lý FMC', geminiResponse, true);
                 
                 // Thêm phản hồi vào lịch sử cuộc trò chuyện
                 conversationHistory.push({
@@ -305,7 +547,16 @@
                     messagesDiv.removeChild(loadingMsg);
                 }
                 
-                appendMessage('System', 'Xin lỗi, đã xảy ra lỗi khi xử lý yêu cầu của bạn: ' + error.message);
+                appendMessage('Chatbot FMC', 'Xin lỗi, đã xảy ra lỗi khi xử lý yêu cầu của bạn: ' + error.message, true);
+            }
+        }
+        
+        // Đảm bảo danh sách giọng nói được tải
+        if (isSpeechSupported) {
+            if (speechSynthesis.onvoiceschanged !== undefined) {
+                speechSynthesis.onvoiceschanged = function() {
+                    speechSynthesis.getVoices();
+                };
             }
         }
         
